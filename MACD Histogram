@@ -1,0 +1,40 @@
+//@version=6
+strategy("MACD Hist strategy", overlay=true)
+
+// Getting user inputs for the MACD calculation
+fast_length = input(title = "Fast Length", defval = 4) // Fast EMA length
+slow_length = input(title = "Slow Length", defval = 13) // Slow EMA length
+src = input(title = "Source", defval = close) // Source data for EMA calculation, default is closing price
+signal_length = input.int(title = "Signal Smoothing",  minval = 1, maxval = 50, defval = 4) // Length for Signal line smoothing
+sma_source = input.string(title = "Oscillator MA Type",  defval = "EMA", options = ["SMA", "EMA"]) // Choice between SMA and EMA for MACD calculation
+sma_signal = input.string(title = "Signal Line MA Type", defval = "EMA", options = ["SMA", "EMA"]) // Choice of SMA or EMA for Signal line
+
+ma_len= input.int(18, minval=1, title="Ema Length")
+ma_out = ta.ema(close, ma_len)
+plot(ma_out, color=color.green, title="MA",linewidth = 2)
+// Calculating the MACD and Signal line
+fast_ma = sma_source == "SMA" ? ta.sma(src, fast_length) : ta.ema(src, fast_length) // Fast Moving Average
+slow_ma = sma_source == "SMA" ? ta.sma(src, slow_length) : ta.ema(src, slow_length) // Slow Moving Average
+macd = fast_ma - slow_ma // MACD Line
+signal = sma_signal == "SMA" ? ta.sma(macd, signal_length) : ta.ema(macd, signal_length) // Signal Line
+hist = macd - signal // MACD Histogram
+
+
+//Check if trade is taken on current candle
+detect_exit = strategy.position_size == 0 and strategy.closedtrades.exit_bar_index(strategy.closedtrades - 1) == bar_index
+
+// Buy condition: Angle > 25 degrees
+//buyCondition = (hist > 1.0) and (hist > hist[1] and hist[1] < 0) and (hist[2] < hist[1]) //and (detect_exit==false) //and ( close> ma_out)
+buyCondition = (hist > 1.0) and (hist > hist[1]) and (hist[2] < hist[1]) and ( close> ma_out)
+
+sellCondition = hist < -2 
+// Execute trades
+if buyCondition and strategy.opentrades == 0
+    strategy.entry("Long", strategy.long,comment = "Buy")
+
+if sellCondition and strategy.opentrades > 0
+    strategy.close("Long",comment = "Sell" )
+
+if hour > 15 and minute > 15 
+    strategy.close("Long",comment = "Unknown")
+
