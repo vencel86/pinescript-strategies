@@ -1,0 +1,31 @@
+//@version=5
+strategy("MA Angle Strategy", overlay=true)
+
+// Input settings
+maLength = input(4, title="Moving Average Length")
+angleThreshold = input(25, title="Angle Threshold for Buy")
+
+// Calculate Moving Average
+ma = ta.vwma(close, maLength)
+
+// Calculate angle approximation
+maDiff = ma - ma[1]
+angle = math.atan(maDiff) * 180 / math.pi  // Convert to degrees
+
+// Buy condition: Angle > 25 degrees
+buyCondition = angle > angleThreshold and maDiff>5
+
+// Sell condition: Angle is horizontal or below (<= 0 degrees)
+sellCondition = angle < 5
+
+// Execute trades
+strategy.entry("Long", strategy.long, when=buyCondition)
+strategy.close("Long", when=sellCondition)
+
+// Plot MA and angle
+timeframeMult = timeframe.in_seconds() / 60  // Convert to minutes
+plot(ma, title="Moving Average", color=color.blue)
+label = str.tostring(angle, "#.##")
+labelColor = angle > angleThreshold ? color.green : angle <= 0 ? color.red : color.gray
+//plotshape(series=buyCondition, location=location.belowbar, color=color.green, style=shape.labelup, title="BUY")
+//plotshape(series=sellCondition, location=location.abovebar, color=color.red, style=shape.labeldown, title="SELL")
