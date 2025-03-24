@@ -27,7 +27,10 @@ detect_exit = strategy.position_size == 0 and strategy.closedtrades.exit_bar_ind
 //buyCondition = (hist > 1.0) and (hist > hist[1] and hist[1] < 0) and (hist[2] < hist[1]) //and (detect_exit==false) //and ( close> ma_out)
 buyCondition = (hist > 1.0) and (hist > hist[1]) and (hist[2] < hist[1]) and ( close> ma_out)
 
-sellCondition = hist < -2 
+atrVal = ta.atr(14)
+sellThreshold = -atrVal * 0.3  // Example: 50% of ATR as threshold
+sellCondition = hist < sellThreshold
+
 // Execute trades
 if buyCondition and strategy.opentrades == 0
     strategy.entry("Long", strategy.long,comment = "Buy")
