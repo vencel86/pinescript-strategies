@@ -1,0 +1,160 @@
+//@version=5
+strategy("2-Candle", overlay=true,
+     calc_on_every_tick=true,
+     process_orders_on_close=false)
+
+//──────────────────── Inputs ───────────────────────────────
+rr              = input.float(1.5, "Risk/Reward Ratio", step=0.1)
+fixedTargetPts  = input.float(20, "Fixed Target (Points)", step=1)
+dojiBodyPct     = input.float(25, "Max body% for Doji", step=1)
+entryBuffer     = input.float(5, "Buffer Points for Entry", step=1)
+spinningTopPct  = input.float(40, "Max body% for Spinning Top", step=1)
+sess            = input.session("0915-1515", "Trading Session")
+tz              = input.string("Asia/Kolkata", "Session Timezone")
+
+//──────────────────── Session logic ───────────────────────────────
+inSession = not na(time(timeframe.period, sess, tz))
+sessionEnded = inSession[1] and not inSession   // TRUE at the first bar OUTSIDE session
+
+// Count how many bars since session started
+var int sessionBars = 0
+if inSession
+    sessionBars := inSession[1] ? sessionBars + 1 : 1
+else
+    sessionBars := 0
+
+//──────────────────── Candle utilities ───────────────────────────────
+bodySize(o,c)       => math.abs(c - o)
+upperShadow(h,o,c)  => h - math.max(o,c)
+lowerShadow(l,o,c)  => math.min(o,c) - l
+totalRange(h,l)     => h - l
+
+isDoji(o,c,h,l) =>
+    tr = totalRange(h,l)
+    tr == 0 ? false : (bodySize(o,c) / tr * 100) < dojiBodyPct
+
+isSpinningTop(o,c,h,l) =>
+    tr = totalRange(h,l)
+    tr == 0 ? false : (bodySize(o,c) / tr * 100) < spinningTopPct and not isDoji(o,c,h,l)
+
+isHangingMan(o,c,h,l) =>
+    body  = bodySize(o,c)
+    lower = lowerShadow(l,o,c)
+    upper = upperShadow(h,o,c)
+    tr    = totalRange(h,l)
+    tr == 0 ? false : (lower > body*2) and (upper < body) and ((math.max(o,c) > h - tr*0.1))
+
+isHammer(o,c,h,l) =>
+    body  = bodySize(o,c)
+    lower = lowerShadow(l,o,c)
+    upper = upperShadow(h,o,c)
+    tr    = totalRange(h,l)
+    tr == 0 ? false : (lower > body*2) and (upper <= body*0.3) and ((math.min(o,c) < l + tr*0.25))
+
+//──────────────────── Trade state vars ───────────────────────────────
+var bool  waitingForEntry = false
+var float entryPrice      = na
+var float stopPrice       = na
+var float targetPrice     = na
+
+var float intraEntryPrice = na
+var float intraStopPrice  = na
+
+var float entryFillPrice = na
+var float actualStop     = na
+var float actualTarget   = na
+var int   entryBar       = na
+
+// Labels
+var label lblEntry  = na
+var label lblStop   = na
+var label lblTarget = na
+
+//──────────────────── Pattern logic (restricted inside session) ───────────────────────────────
+prevHigh     = high[1]
+prevPrevHigh = high[2]
+prevOpen     = open[1]
+prevClose    = close[1]
+prevLow      = low[1]
+prevPrevLow  = low[2]
+
+bullishPrev = prevClose > prevOpen
+
+positiveShape = bullishPrev and not (
+     isDoji(prevOpen, prevClose, high[1], low[1]) or
+     isSpinningTop(prevOpen, prevClose, high[1], low[1]) or
+     isHangingMan(prevOpen, prevClose, high[1], low[1]) or
+     isHammer(prevOpen, prevClose, high[1], low[1]))
+
+pattern = (prevHigh > prevPrevHigh) and positiveShape and (prevLow > prevPrevLow)
+
+//──────────────────── Entry setup (inside session only) ───────────────────────────────
+if inSession and sessionBars >= 2 and pattern and not waitingForEntry and strategy.opentrades == 0
+    waitingForEntry := true
+
+    entryPrice  := prevHigh + entryBuffer
+    stopPrice   := math.max(prevLow, prevPrevLow)
+    risk        = entryPrice - stopPrice
+
+    rrTarget    = entryPrice + rr * risk
+    fixedTarget = entryPrice + fixedTargetPts
+
+    targetPrice := math.min(rrTarget, fixedTarget)
+
+    intraEntryPrice := entryPrice
+    intraStopPrice  := stopPrice
+
+    // Remove old labels
+    if not na(lblEntry)
+        label.delete(lblEntry)
+        label.delete(lblStop)
+        label.delete(lblTarget)
+
+    // Draw new labels
+    lblEntry  := label.new(bar_index, entryPrice,  "Entry: "  + str.tostring(entryPrice), style=label.style_label_up, color=color.green, textcolor=color.white)
+    lblStop   := label.new(bar_index, stopPrice,   "SL: "     + str.tostring(stopPrice),  style=label.style_label_down, color=color.red, textcolor=color.white)
+    lblTarget := label.new(bar_index, targetPrice, "Target: " + str.tostring(targetPrice),style=label.style_label_down, color=color.blue, textcolor=color.white)
+
+//──────────────────── Entry trigger (inside session only) ───────────────────────────────
+if waitingForEntry and strategy.position_size == 0 and inSession
+    strategy.entry("Long", strategy.long, stop=intraEntryPrice)
+    waitingForEntry := false
+
+//──────────────────── On Fill — Compute REAL SL/TP ───────────────────────────────
+if strategy.position_size > 0 and strategy.position_size[1] == 0
+    entryFillPrice := strategy.position_avg_price
+    entryBar := bar_index
+
+    riskNow = entryFillPrice - intraStopPrice
+    riskNow := riskNow <= 0 ? syminfo.mintick * 10 : riskNow
+
+    rrTarget    = entryFillPrice + rr * riskNow
+    fixedTarget = entryFillPrice + fixedTargetPts
+
+    actualTarget := math.min(rrTarget, fixedTarget)
+    actualStop   := math.min(intraStopPrice, entryFillPrice - syminfo.mintick)
+
+//──────────────────── TP/SL Management (INSIDE SESSION ONLY) ───────────────────────────────
+allowTP_SL = strategy.position_size > 0 and not na(entryBar)
+
+if allowTP_SL and inSession
+    strategy.exit("SL", "Long", stop=actualStop)
+
+    if high >= actualTarget
+        strategy.close("Long", comment="TP HIT")
+
+//──────────────────── AUTO-CLOSE POSITION AT SESSION END ───────────────────────────────
+if sessionEnded and strategy.position_size != 0
+    strategy.close("Long", comment="SESSION END EXIT")
+
+//──────────────────── Reset after any exit ───────────────────────────────
+if strategy.position_size == 0 and strategy.position_size[1] > 0
+    entryFillPrice := na
+    actualTarget   := na
+    actualStop     := na
+    entryBar       := na
+
+//──────────────────── Visuals ───────────────────────────────
+plot(strategy.position_size > 0 ? actualStop   : na, "Stop",   color=color.red,  style=plot.style_linebr)
+plot(strategy.position_size > 0 ? actualTarget : na, "Target", color=color.blue, style=plot.style_linebr)
+plot(waitingForEntry ? entryPrice : na, "Pending Entry", color=color.green, style=plot.style_linebr)
